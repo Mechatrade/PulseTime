@@ -705,6 +705,11 @@ function attachListeners(){
     runningEntry = entries.find(e=> !e.end && e.ownerUid===uid) || null;
     renderEntries();
     updatePunchUI();
+    // Keep the Reports breakdown in sync too, so an edit/delete made from
+    // within a report row (or from Recent Entries) is reflected immediately
+    // if the admin is currently looking at the Reports tab.
+    const reportsTab = document.querySelector('nav.tabs button[data-tab="reports"]');
+    if(isAdmin && reportsTab && reportsTab.classList.contains('active')) runReport();
   }, (err)=> toast('Entries sync error: '+err.message));
 
   if(isAdmin){
@@ -1091,6 +1096,7 @@ function runReport(){
       const durStr = formatHM(endD - startD);
       const modeTag = e.workMode ? `<span class="modePill ${e.workMode}">${e.workMode}</span>` : '—';
       const adjustedTag = e.edited ? `<span class="adjustedPill" title="Adjusted by ${escapeHtml(e.editedBy||'admin')}">Adjusted</span>` : '';
+      const actionsTag = isAdmin ? `<button class="editBtn" data-id="${e.id}" data-action="editEntry">Edit</button><button data-id="${e.id}" data-action="delEntry">Delete</button>` : '';
       return `<tr>
         <td>${modeTag}</td>
         <td>${dateStr}</td>
@@ -1098,6 +1104,7 @@ function runReport(){
         <td class="mono">${outStr}</td>
         <td class="durationCell">${durStr}</td>
         <td>${adjustedTag}</td>
+        <td class="rowActions">${actionsTag}</td>
       </tr>`;
     }).join('');
     return `
@@ -1109,7 +1116,7 @@ function runReport(){
       <tr class="reportClientDetailRow" id="${rowId}" style="display:none;">
         <td colspan="3" style="padding:0;">
           <table class="breakdownTable">
-            <thead><tr><th>Mode</th><th>Date</th><th>In</th><th>Out</th><th>Duration</th><th>Adjusted</th></tr></thead>
+            <thead><tr><th>Mode</th><th>Date</th><th>In</th><th>Out</th><th>Duration</th><th>Adjusted</th><th></th></tr></thead>
             <tbody>${breakdownRows}</tbody>
           </table>
         </td>
@@ -1124,6 +1131,27 @@ function runReport(){
       const isOpen = detailRow.style.display !== 'none';
       detailRow.style.display = isOpen ? 'none' : 'table-row';
       if(chevron) chevron.textContent = isOpen ? '▸' : '▾';
+    });
+  });
+
+  // Edit / delete from within a breakdown row — same actions as Recent Entries,
+  // but reachable for any entry in the filtered report range, not just the
+  // 50 most recent. Re-runs the report after a change so totals stay accurate.
+  staffBody.querySelectorAll('.breakdownTable [data-action="editEntry"]').forEach(btn=>{
+    btn.addEventListener('click', (ev)=>{
+      ev.stopPropagation();
+      openEditEntryModal(btn.dataset.id);
+    });
+  });
+  staffBody.querySelectorAll('.breakdownTable [data-action="delEntry"]').forEach(btn=>{
+    btn.addEventListener('click', async (ev)=>{
+      ev.stopPropagation();
+      if(!confirm('Delete this time entry?')) return;
+      try{
+        await deleteDoc(doc(db,'tt_entries',btn.dataset.id));
+        toast('Entry deleted');
+        runReport();
+      }catch(err){ toast('Could not delete: '+err.message); }
     });
   });
 }
