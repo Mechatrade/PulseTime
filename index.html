@@ -278,6 +278,31 @@
   .formRow{ display:flex; gap:10px; flex-wrap:wrap; margin-bottom:6px; }
   .formRow > div{ flex:1; min-width:140px; }
 
+  /* ---------- Schedule tab ---------- */
+  .scheduleGrid{ display:grid; grid-template-columns:repeat(auto-fit, minmax(150px,1fr)); gap:12px; }
+  .scheduleDay{
+    background:var(--slate); border-radius:var(--radius); padding:14px; min-height:150px;
+    display:flex; flex-direction:column; gap:10px; border-top:3px solid #3a4560;
+  }
+  .scheduleDay.isToday{ border-top-color:var(--brass-bright); }
+  .scheduleDay.isPast{ opacity:.55; }
+  .scheduleDay.claimed.RTO{ border-top-color:#5B7FBF; }
+  .scheduleDay.claimed.WFH{ border-top-color:#4FA8A8; }
+  .scheduleDay .sdDate{ font-size:11px; color:var(--text-muted); text-transform:uppercase; letter-spacing:.05em; }
+  .scheduleDay .sdDay{ font-size:16px; font-weight:700; font-family:'Fraunces',serif; }
+  .scheduleDay .sdBody{ flex:1; display:flex; flex-direction:column; justify-content:center; gap:8px; }
+  .scheduleClaim{ display:flex; flex-direction:column; gap:6px; }
+  .scheduleClaim button{
+    font-size:11px; font-weight:700; padding:8px 10px; border-radius:6px; letter-spacing:.02em;
+    background:#242e47; color:var(--text-light); border:1px solid #3a4560;
+  }
+  .scheduleClaim button:hover{ border-color:var(--brass); color:var(--brass-bright); }
+  .scheduleClaimedBy{ font-size:12px; color:var(--text-light); word-break:break-word; }
+  .scheduleClaimedBy .owner{ font-size:11px; color:var(--text-muted); display:block; margin-top:4px; }
+  .scheduleFreeBtn{ background:transparent; color:var(--text-muted); font-size:10px; padding:4px 0; align-self:flex-start; }
+  .scheduleFreeBtn:hover{ color:var(--red); }
+  .schedulePastNote{ font-size:11px; color:var(--text-muted); font-style:italic; }
+
   .toast{
     position:fixed; bottom:24px; left:50%; transform:translateX(-50%);
     background:var(--ink); color:var(--text-light); padding:12px 20px; border-radius:8px;
@@ -354,6 +379,7 @@
 
   <nav class="tabs">
     <button data-tab="clock" class="active">Time Clock</button>
+    <button data-tab="schedule">Schedule</button>
     <button data-tab="team">Team</button>
     <button data-tab="reports">Reports</button>
   </nav>
@@ -389,6 +415,25 @@
         </table>
         <div class="emptyState" id="entriesEmpty" style="display:none;">No time entries yet — time in above to start your first one.</div>
       </div>
+    </section>
+
+    <!-- ---------- SCHEDULE PANEL ---------- -->
+    <section class="panel" id="panel-schedule">
+      <h2 class="sectionTitle">Team schedule</h2>
+      <p class="sub" style="margin:-10px 0 18px; color:var(--text-muted); font-size:13px;">
+        Pick RTO or WFH for a day. Each day has one slot for the whole team — first to claim it gets it, and it's locked for everyone else.
+      </p>
+      <div class="card" style="margin-bottom:18px;">
+        <div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px;">
+          <div style="display:flex; gap:8px;">
+            <button class="miniBtn" id="schedulePrevBtn" type="button" style="border:1px solid #3a4560; border-radius:6px;">&larr; Prev week</button>
+            <button class="miniBtn" id="scheduleTodayBtn" type="button" style="border:1px solid #3a4560; border-radius:6px;">This week</button>
+            <button class="miniBtn" id="scheduleNextBtn" type="button" style="border:1px solid #3a4560; border-radius:6px;">Next week &rarr;</button>
+          </div>
+          <div class="mono" id="scheduleWeekLabel" style="font-size:13px; color:var(--text-muted);"></div>
+        </div>
+      </div>
+      <div class="scheduleGrid" id="scheduleGrid"></div>
     </section>
 
     <!-- ---------- TEAM PANEL ---------- -->
@@ -484,7 +529,7 @@ import {
 import {
   getFirestore, collection, addDoc, updateDoc, deleteDoc, doc,
   onSnapshot, query, where, orderBy, serverTimestamp, Timestamp,
-  getDoc, setDoc, writeBatch
+  getDoc, setDoc, writeBatch, runTransaction
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 
 // ---------------------------------------------------------------
@@ -516,9 +561,11 @@ let isAdmin = false;    // resolved from tt_users/{uid} on login
 let userStatus = null;  // 'pending' | 'approved'
 let entries = [];       // {id, start, end, ownerUid, ownerEmail}
 let teamMembers = [];   // {id, email, role, status}
-let unsubEntries=null, unsubTeam=null;
+let unsubEntries=null, unsubTeam=null, unsubSchedule=null;
 let runningEntry = null; // this user's single active time-in entry, if any
 let elapsedTimer = null;
+let scheduleMap = {};      // dateStr ('YYYY-MM-DD', Manila) -> {workMode, ownerUid, ownerEmail}
+let scheduleWeekStart = null; // Date representing the Monday of the week currently shown
 
 // ---------------- Toast ----------------
 function toast(msg){
@@ -626,8 +673,9 @@ onAuthStateChanged(auth, async (user)=>{
     document.getElementById('pendingScreen').style.display = 'none';
     if(unsubEntries) unsubEntries();
     if(unsubTeam) unsubTeam();
+    if(unsubSchedule) unsubSchedule();
     if(unsubOwnUserDoc) unsubOwnUserDoc();
-    entries = []; isAdmin = false; userStatus = null;
+    entries = []; isAdmin = false; userStatus = null; scheduleMap = {};
   }
 });
 
@@ -721,6 +769,16 @@ function attachListeners(){
       populateReportStaffFilter();
     }, (err)=> toast('Team sync error: '+err.message));
   }
+
+  // Everyone (staff + admin) can see and claim schedule days, so this listens
+  // for every signed-in approved user. The whole collection stays small (at
+  // most one doc per calendar day), so no date-range query is needed.
+  const scheduleQ = query(collection(db,'tt_schedule'));
+  unsubSchedule = onSnapshot(scheduleQ, (snap)=>{
+    scheduleMap = {};
+    snap.docs.forEach(d=> scheduleMap[d.id] = d.data());
+    renderScheduleWeek();
+  }, (err)=> toast('Schedule sync error: '+err.message));
 }
 
 function populateReportStaffFilter(){
@@ -1198,6 +1256,159 @@ document.getElementById('reportClearBtn').addEventListener('click', ()=>{
 });
 // Re-run whenever the Reports tab is opened, so it reflects the latest synced entries.
 document.querySelector('nav.tabs button[data-tab="reports"]').addEventListener('click', runReport);
+
+// ---------------- Schedule (RTO/WFH calendar) ----------------
+// One shared slot per calendar day across the whole team: tt_schedule/{YYYY-MM-DD}.
+// First person to successfully create that doc claims the day as RTO or WFH;
+// everyone else is locked out of that date (enforced both client-side via the
+// synced scheduleMap, and server-side — the Firestore rule only allows create
+// when the doc doesn't exist yet). Admin can clear/reassign any day; a staffer
+// can free up a day they claimed themselves, before it happens.
+
+// Returns the Manila-time calendar date ("YYYY-MM-DD") for a given instant.
+function getManilaDateStr(date){
+  const parts = new Intl.DateTimeFormat('en-US',{
+    timeZone:MANILA_TZ, year:'numeric', month:'2-digit', day:'2-digit'
+  }).formatToParts(date).reduce((acc,p)=>{ acc[p.type]=p.value; return acc; },{});
+  return `${parts.year}-${parts.month}-${parts.day}`;
+}
+
+// Monday-start week containing the given date, as a plain Date (local midnight
+// is fine here — only used to add/subtract whole days, never shown directly).
+function startOfWeekManila(date){
+  const todayStr = getManilaDateStr(date);
+  const [y,m,d] = todayStr.split('-').map(Number);
+  const asLocal = new Date(y, m-1, d);
+  const dow = asLocal.getDay(); // 0=Sun..6=Sat
+  const diffToMonday = dow===0 ? -6 : 1-dow;
+  asLocal.setDate(asLocal.getDate() + diffToMonday);
+  return asLocal;
+}
+
+function initScheduleWeek(){
+  if(!scheduleWeekStart) scheduleWeekStart = startOfWeekManila(new Date());
+}
+
+function renderScheduleWeek(){
+  initScheduleWeek();
+  const grid = document.getElementById('scheduleGrid');
+  if(!grid) return;
+
+  const todayStr = getManilaDateStr(new Date());
+  const days = [];
+  for(let i=0;i<7;i++){
+    const d = new Date(scheduleWeekStart);
+    d.setDate(d.getDate()+i);
+    const y = d.getFullYear(), m = String(d.getMonth()+1).padStart(2,'0'), day = String(d.getDate()).padStart(2,'0');
+    days.push(`${y}-${m}-${day}`);
+  }
+
+  const weekLabel = document.getElementById('scheduleWeekLabel');
+  const fmtShort = (dStr)=>{
+    const [y,m,d] = dStr.split('-').map(Number);
+    return new Intl.DateTimeFormat('en-US',{month:'short',day:'numeric'}).format(new Date(y,m-1,d));
+  };
+  weekLabel.textContent = `${fmtShort(days[0])} – ${fmtShort(days[6])}`;
+
+  grid.innerHTML = days.map(dateStr=>{
+    const [y,m,d] = dateStr.split('-').map(Number);
+    const dObj = new Date(y,m-1,d);
+    const dayName = new Intl.DateTimeFormat('en-US',{weekday:'short'}).format(dObj);
+    const dateLabel = new Intl.DateTimeFormat('en-US',{month:'short',day:'numeric'}).format(dObj);
+    const isToday = dateStr === todayStr;
+    const isPast = dateStr < todayStr;
+    const claim = scheduleMap[dateStr];
+
+    let cls = 'scheduleDay';
+    if(isToday) cls += ' isToday';
+    if(isPast) cls += ' isPast';
+    if(claim) cls += ` claimed ${claim.workMode}`;
+
+    let bodyHtml;
+    if(claim){
+      const isMine = claim.ownerUid === currentUser.uid;
+      const canFree = !isPast && (isAdmin || isMine);
+      bodyHtml = `
+        <div class="scheduleClaimedBy">
+          <span class="modePill ${claim.workMode}">${claim.workMode}</span>
+          <span class="owner">${escapeHtml(claim.ownerEmail||'—')}</span>
+        </div>
+        ${canFree ? `<button class="scheduleFreeBtn" data-action="freeDay" data-date="${dateStr}">${isAdmin && !isMine ? 'Clear (admin)' : 'Cancel my slot'}</button>` : ''}
+      `;
+    } else if(isPast){
+      bodyHtml = `<div class="schedulePastNote">No slot taken</div>`;
+    } else {
+      bodyHtml = `
+        <div class="scheduleClaim">
+          <button data-action="claimDay" data-date="${dateStr}" data-mode="RTO">Claim RTO</button>
+          <button data-action="claimDay" data-date="${dateStr}" data-mode="WFH">Claim WFH</button>
+        </div>
+      `;
+    }
+
+    return `<div class="${cls}">
+      <div>
+        <div class="sdDate">${dayName}</div>
+        <div class="sdDay">${dateLabel}</div>
+      </div>
+      <div class="sdBody">${bodyHtml}</div>
+    </div>`;
+  }).join('');
+
+  grid.querySelectorAll('[data-action="claimDay"]').forEach(btn=>{
+    btn.addEventListener('click', ()=> claimScheduleDay(btn.dataset.date, btn.dataset.mode));
+  });
+  grid.querySelectorAll('[data-action="freeDay"]').forEach(btn=>{
+    btn.addEventListener('click', ()=> freeScheduleDay(btn.dataset.date));
+  });
+}
+
+async function claimScheduleDay(dateStr, mode){
+  const ref = doc(db,'tt_schedule', dateStr);
+  try{
+    await runTransaction(db, async (tx)=>{
+      const snap = await tx.get(ref);
+      if(snap.exists()){
+        throw new Error('That day was just taken by someone else.');
+      }
+      tx.set(ref, {
+        date: dateStr,
+        workMode: mode,
+        ownerUid: currentUser.uid,
+        ownerEmail: currentUser.email,
+        createdAt: serverTimestamp()
+      });
+    });
+    toast(`${mode} claimed for ${dateStr}`);
+  }catch(err){
+    toast('Could not claim that day: '+err.message);
+    renderScheduleWeek(); // snap back to the real state in case of a race
+  }
+}
+
+async function freeScheduleDay(dateStr){
+  if(!confirm('Free up this day so someone else can claim it?')) return;
+  try{
+    await deleteDoc(doc(db,'tt_schedule', dateStr));
+    toast('Slot cleared');
+  }catch(err){ toast('Could not clear that day: '+err.message); }
+}
+
+document.getElementById('schedulePrevBtn').addEventListener('click', ()=>{
+  initScheduleWeek();
+  scheduleWeekStart.setDate(scheduleWeekStart.getDate()-7);
+  renderScheduleWeek();
+});
+document.getElementById('scheduleNextBtn').addEventListener('click', ()=>{
+  initScheduleWeek();
+  scheduleWeekStart.setDate(scheduleWeekStart.getDate()+7);
+  renderScheduleWeek();
+});
+document.getElementById('scheduleTodayBtn').addEventListener('click', ()=>{
+  scheduleWeekStart = startOfWeekManila(new Date());
+  renderScheduleWeek();
+});
+document.querySelector('nav.tabs button[data-tab="schedule"]').addEventListener('click', renderScheduleWeek);
 
 // ---------------- Utils ----------------
 function escapeHtml(str){
