@@ -1241,6 +1241,20 @@ function getFilteredCompletedEntries(){
   });
 }
 
+// Looks up the APPROVED schedule request (if any) that the given entry's
+// owner has for the entry's own calendar date, using the already-synced
+// scheduleMap from the Schedule tab. This is how Reports compares "Plan
+// Mode" (what was requested/approved on the Schedule calendar beforehand)
+// against "Actual Mode" (what they actually picked when they timed in).
+// A pending-but-not-yet-approved request doesn't count as a plan here.
+function getPlanModeForEntry(e){
+  if(!e.start || !e.start.toDate || !e.ownerUid) return null;
+  const dateStr = getManilaDateStr(e.start.toDate());
+  const reqs = scheduleMap[dateStr] || [];
+  const approved = reqs.find(r=> r.ownerUid === e.ownerUid && r.status === 'approved');
+  return approved ? approved.workMode : null;
+}
+
 function runReport(){
   const filtered = getFilteredCompletedEntries();
 
@@ -1292,11 +1306,16 @@ function runReport(){
       const inStr = new Intl.DateTimeFormat('en-US',{hour:'2-digit',minute:'2-digit',timeZone:tz}).format(startD) + ' ' + tzAbbr(startD, tz);
       const outStr = new Intl.DateTimeFormat('en-US',{hour:'2-digit',minute:'2-digit',timeZone:tz}).format(endD) + ' ' + tzAbbr(endD, tz);
       const durStr = formatHM(endD - startD);
-      const modeTag = e.workMode ? `<span class="modePill ${e.workMode}">${e.workMode}</span>` : '—';
+      const planMode = getPlanModeForEntry(e);
+      const planTag = planMode ? `<span class="modePill ${planMode}">${planMode}</span>` : '<span class="schedulePastNote">No plan</span>';
+      const actualTag = e.workMode ? `<span class="modePill ${e.workMode}">${e.workMode}</span>` : '—';
+      const mismatchTag = (planMode && e.workMode && planMode !== e.workMode)
+        ? `<span class="adjustedPill" style="background:var(--red); color:#fff;" title="Planned ${planMode}, actually ${e.workMode}">Mismatch</span>` : '';
       const adjustedTag = e.edited ? `<span class="adjustedPill" title="Adjusted by ${escapeHtml(e.editedBy||'admin')}">Adjusted</span>` : '';
       const actionsTag = isAdmin ? `<button class="editBtn" data-id="${e.id}" data-action="editEntry">Edit</button><button data-id="${e.id}" data-action="delEntry">Delete</button>` : '';
       return `<tr>
-        <td>${modeTag}</td>
+        <td>${planTag}</td>
+        <td>${actualTag} ${mismatchTag}</td>
         <td>${dateStr}</td>
         <td class="mono">${inStr}</td>
         <td class="mono">${outStr}</td>
@@ -1314,7 +1333,7 @@ function runReport(){
       <tr class="reportClientDetailRow" id="${rowId}" style="display:none;">
         <td colspan="3" style="padding:0;">
           <table class="breakdownTable">
-            <thead><tr><th>Mode</th><th>Date</th><th>In</th><th>Out</th><th>Duration</th><th>Adjusted</th><th></th></tr></thead>
+            <thead><tr><th>Plan Mode</th><th>Actual Mode</th><th>Date</th><th>In</th><th>Out</th><th>Duration</th><th>Adjusted</th><th></th></tr></thead>
             <tbody>${breakdownRows}</tbody>
           </table>
         </td>
@@ -1358,7 +1377,7 @@ function exportReportCSV(){
   const filtered = getFilteredCompletedEntries().slice().sort((a,b)=> a.start.toDate() - b.start.toDate());
   if(filtered.length===0){ toast('No completed entries to export in this range'); return; }
 
-  const rows = [['Teammate','Email','Mode','Date','Time In','Time Out','Duration (hours)']];
+  const rows = [['Teammate','Email','Plan Mode','Actual Mode','Date','Time In','Time Out','Duration (hours)']];
   filtered.forEach(e=>{
     const tz = MANILA_TZ;
     const startD = e.start.toDate();
@@ -1367,7 +1386,8 @@ function exportReportCSV(){
     const inStr = new Intl.DateTimeFormat('en-US',{hour:'2-digit',minute:'2-digit',timeZone:tz}).format(startD) + ' ' + tzAbbr(startD, tz);
     const outStr = new Intl.DateTimeFormat('en-US',{hour:'2-digit',minute:'2-digit',timeZone:tz}).format(endD) + ' ' + tzAbbr(endD, tz);
     const hours = ((endD - startD) / 3600000).toFixed(2);
-    rows.push([e.ownerName||e.ownerEmail||'', e.ownerEmail||'', e.workMode||'', dateStr, inStr, outStr, hours]);
+    const planMode = getPlanModeForEntry(e);
+    rows.push([e.ownerName||e.ownerEmail||'', e.ownerEmail||'', planMode||'No plan', e.workMode||'', dateStr, inStr, outStr, hours]);
   });
 
   const csv = rows.map(r=> r.map(cell=>{
