@@ -300,11 +300,15 @@
   .scheduleMonthGrid > .scheduleCell:nth-child(7n){ border-right:none; }
   .scheduleCell.empty{ background:#1f2740cc; }
   .scheduleCell.isToday{ box-shadow: inset 0 0 0 2px var(--brass-bright); }
-  .scheduleCell.claimed.RTO{ background:#28345a; }
-  .scheduleCell.claimed.WFH{ background:#223b44; }
-  .scheduleCell.pendingDay{ background:rgba(184,147,74,0.14); }
   .scheduleCell .cellDate{ font-size:12px; font-weight:700; color:var(--text-light); }
   .scheduleCell.isPast .cellDate{ color:var(--text-muted); }
+  /* Each request (there can now be several per day, from different people)
+     renders as its own compact block inside the cell. */
+  .cellReq{ border-radius:6px; padding:5px 6px; margin-bottom:6px; }
+  .cellReq:last-child{ margin-bottom:0; }
+  .cellReq.approved.RTO{ background:#28345a; }
+  .cellReq.approved.WFH{ background:#223b44; }
+  .cellReq.pending{ background:rgba(184,147,74,0.14); }
   .scheduleCell .cellClaim{ display:flex; flex-direction:column; gap:5px; margin-top:auto; }
   .scheduleCell .cellClaim button{
     font-size:10px; font-weight:700; padding:6px 7px; border-radius:5px; letter-spacing:.02em;
@@ -312,17 +316,17 @@
   }
   .scheduleCell .cellClaim button:hover{ border-color:var(--brass); color:var(--brass-bright); }
   .scheduleCell .cellOwner{ font-size:10px; color:var(--text-muted); word-break:break-word; margin-top:2px; }
-  .scheduleCell .cellDecide{ display:flex; flex-direction:column; gap:5px; margin-top:auto; }
+  .scheduleCell .cellDecide{ display:flex; gap:5px; margin-top:5px; }
   .scheduleCell .cellApprove{
-    background:var(--green); color:#fff; font-weight:700; font-size:10px; padding:6px 7px; border-radius:5px;
+    background:var(--green); color:#fff; font-weight:700; font-size:9px; padding:5px 6px; border-radius:5px;
   }
   .scheduleCell .cellApprove:hover{ background:#3f8459; }
   .scheduleCell .cellDeny{
-    background:transparent; color:var(--text-muted); font-size:10px; padding:6px 7px; border-radius:5px; border:1px solid #3a4560;
+    background:transparent; color:var(--text-muted); font-size:9px; padding:5px 6px; border-radius:5px; border:1px solid #3a4560;
   }
   .scheduleCell .cellDeny:hover{ color:var(--red); border-color:var(--red); }
   .scheduleCell .cellCancel{
-    background:transparent; color:var(--text-muted); font-size:9px; padding:3px 0; text-align:left; margin-top:auto;
+    background:transparent; color:var(--text-muted); font-size:9px; padding:4px 0 0; text-align:left;
   }
   .scheduleCell .cellCancel:hover{ color:var(--red); }
   @media (max-width: 760px){
@@ -451,7 +455,7 @@
     <section class="panel" id="panel-schedule">
       <h2 class="sectionTitle">Team schedule</h2>
       <p class="sub" style="margin:-10px 0 18px; color:var(--text-muted); font-size:13px;">
-        Request RTO or WFH for a day. Each day has one slot for the whole team — the first request holds that slot until admin approves or denies it, and an approved day is locked for everyone else.
+        Request RTO or WFH for any day. Anyone can request the same day — admin reviews each request and decides who gets approved. Once a request is approved it's locked in for good.
       </p>
       <div class="card" style="margin-bottom:18px;">
         <div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px;">
@@ -838,8 +842,15 @@ function attachListeners(){
   // most one doc per calendar day), so no date-range query is needed.
   const scheduleQ = query(collection(db,'tt_schedule'));
   unsubSchedule = onSnapshot(scheduleQ, (snap)=>{
+    // Multiple people can request (and be approved for) the same date now,
+    // so this groups every request doc by its "date" field into an array —
+    // scheduleMap[dateStr] = [ {id, date, workMode, ownerUid, ... }, ... ].
     scheduleMap = {};
-    snap.docs.forEach(d=> scheduleMap[d.id] = d.data());
+    snap.docs.forEach(d=>{
+      const data = { id: d.id, ...d.data() };
+      if(!scheduleMap[data.date]) scheduleMap[data.date] = [];
+      scheduleMap[data.date].push(data);
+    });
     renderScheduleMonth();
   }, (err)=> toast('Schedule sync error: '+err.message));
 }
@@ -1341,12 +1352,15 @@ document.getElementById('reportClearBtn').addEventListener('click', ()=>{
 document.querySelector('nav.tabs button[data-tab="reports"]').addEventListener('click', runReport);
 
 // ---------------- Schedule (RTO/WFH calendar) ----------------
-// One shared slot per calendar day across the whole team: tt_schedule/{YYYY-MM-DD}.
-// First person to successfully create that doc claims the day as RTO or WFH;
-// everyone else is locked out of that date (enforced both client-side via the
-// synced scheduleMap, and server-side — the Firestore rule only allows create
-// when the doc doesn't exist yet). Admin can clear/reassign any day; a staffer
-// can free up a day they claimed themselves, before it happens.
+// Any number of teammates can request the same calendar day — each request
+// is its own doc, tt_schedule/{YYYY-MM-DD_uid}, so one person can have at
+// most one request per day (the composite id collides if they try twice),
+// but different people each get their own doc for that same date. Admin
+// reviews each request independently and can approve as many of a day's
+// requests as they want — there's no cap on how many people can be
+// RTO/WFH on the same day. Once a request is approved it's locked for
+// good; only a still-pending request can be withdrawn (by its owner) or
+// denied (by admin), either of which removes it.
 
 // Returns the Manila-time calendar date ("YYYY-MM-DD") for a given instant.
 function getManilaDateStr(date){
@@ -1393,44 +1407,43 @@ function renderScheduleMonth(){
     const dateStr = `${year}-${String(month+1).padStart(2,'0')}-${String(dayNum).padStart(2,'0')}`;
     const isToday = dateStr === todayStr;
     const isPast = dateStr < todayStr;
-    const claim = scheduleMap[dateStr];
-    const isPending = claim && claim.status === 'pending';
-    const isApprovedDay = claim && claim.status === 'approved';
+    const requests = (scheduleMap[dateStr] || []).slice().sort((a,b)=> (a.workMode||'').localeCompare(b.workMode||''));
+    const myRequest = requests.find(r=> r.ownerUid === currentUser.uid);
 
     let cls = 'scheduleCell';
     if(isToday) cls += ' isToday';
     if(isPast) cls += ' isPast';
-    if(isApprovedDay) cls += ` claimed ${claim.workMode}`;
-    if(isPending) cls += ' pendingDay';
+    if(requests.length) cls += ' hasRequests';
 
     let innerHtml = `<div class="cellDate">${dayNum}</div>`;
-    if(isApprovedDay){
-      // Once a day is approved it stays locked for good — no cancel/clear for
-      // anyone, owner or admin, since multiple people share this calendar and
-      // freeing a day back up could let someone else grab it out from under
-      // the original claimant.
-      innerHtml += `
-        <span class="modePill ${claim.workMode}">${claim.workMode}</span>
-        <div class="cellOwner">${escapeHtml(claim.ownerName || claim.ownerEmail || '—')}</div>
+
+    innerHtml += requests.map(r=>{
+      const isApprovedReq = r.status === 'approved';
+      const isMine = r.ownerUid === currentUser.uid;
+      let rowHtml = `
+        <span class="modePill ${r.workMode}">${r.workMode}</span>
+        ${isApprovedReq ? '' : '<span class="statusPill pending">Pending</span>'}
+        <div class="cellOwner">${escapeHtml(r.ownerName || r.ownerEmail || '—')}</div>
       `;
-    } else if(isPending){
-      const isMine = claim.ownerUid === currentUser.uid;
-      innerHtml += `
-        <span class="modePill ${claim.workMode}">${claim.workMode}</span>
-        <span class="statusPill pending" style="margin-top:3px;">Pending</span>
-        <div class="cellOwner">${escapeHtml(claim.ownerName || claim.ownerEmail || '—')}</div>
-      `;
-      if(isAdmin){
-        innerHtml += `
-          <div class="cellDecide">
-            <button class="cellApprove" data-action="approveDay" data-date="${dateStr}">Approve</button>
-            <button class="cellDeny" data-action="denyDay" data-date="${dateStr}">Deny</button>
-          </div>
-        `;
-      } else if(isMine){
-        innerHtml += `<button class="cellCancel" data-action="cancelDay" data-date="${dateStr}">Cancel request</button>`;
+      if(!isApprovedReq){
+        // Once a request is approved it's locked for good — no cancel/clear
+        // for anyone, owner or admin. Only a still-pending request can be
+        // withdrawn (by its owner) or denied (by admin).
+        if(isAdmin){
+          rowHtml += `
+            <div class="cellDecide">
+              <button class="cellApprove" data-action="approveReq" data-id="${r.id}">Approve</button>
+              <button class="cellDeny" data-action="denyReq" data-id="${r.id}">Deny</button>
+            </div>
+          `;
+        } else if(isMine){
+          rowHtml += `<button class="cellCancel" data-action="cancelReq" data-id="${r.id}">Cancel request</button>`;
+        }
       }
-    } else if(!isPast){
+      return `<div class="cellReq ${r.status} ${r.workMode}">${rowHtml}</div>`;
+    }).join('');
+
+    if(!isPast && !myRequest){
       innerHtml += `
         <div class="cellClaim">
           <button data-action="claimDay" data-date="${dateStr}" data-mode="RTO">+ RTO</button>
@@ -1446,27 +1459,30 @@ function renderScheduleMonth(){
   grid.querySelectorAll('[data-action="claimDay"]').forEach(btn=>{
     btn.addEventListener('click', ()=> claimScheduleDay(btn.dataset.date, btn.dataset.mode));
   });
-  grid.querySelectorAll('[data-action="approveDay"]').forEach(btn=>{
-    btn.addEventListener('click', ()=> decideScheduleRequest(btn.dataset.date, true));
+  grid.querySelectorAll('[data-action="approveReq"]').forEach(btn=>{
+    btn.addEventListener('click', ()=> decideScheduleRequest(btn.dataset.id, true));
   });
-  grid.querySelectorAll('[data-action="denyDay"]').forEach(btn=>{
-    btn.addEventListener('click', ()=> decideScheduleRequest(btn.dataset.date, false));
+  grid.querySelectorAll('[data-action="denyReq"]').forEach(btn=>{
+    btn.addEventListener('click', ()=> decideScheduleRequest(btn.dataset.id, false));
   });
-  grid.querySelectorAll('[data-action="cancelDay"]').forEach(btn=>{
-    btn.addEventListener('click', ()=> cancelScheduleRequest(btn.dataset.date));
+  grid.querySelectorAll('[data-action="cancelReq"]').forEach(btn=>{
+    btn.addEventListener('click', ()=> cancelScheduleRequest(btn.dataset.id));
   });
 }
 
 // Staff requests a day — it goes in as 'pending' and waits on admin. Admin
-// claiming a day auto-approves it immediately (admin's own call is already
-// authoritative, no point requesting approval from themselves).
+// requesting a day auto-approves it immediately (admin's own call is already
+// authoritative, no point requesting approval from themselves). The doc id
+// is "<date>_<uid>" so one person can't double-request the same day, but a
+// different person gets their own doc for that same date.
 async function claimScheduleDay(dateStr, mode){
-  const ref = doc(db,'tt_schedule', dateStr);
+  const reqId = `${dateStr}_${currentUser.uid}`;
+  const ref = doc(db,'tt_schedule', reqId);
   try{
     await runTransaction(db, async (tx)=>{
       const snap = await tx.get(ref);
       if(snap.exists()){
-        throw new Error('That day already has a request or an approved schedule.');
+        throw new Error('You already have a request for that day.');
       }
       tx.set(ref, {
         date: dateStr,
@@ -1485,11 +1501,11 @@ async function claimScheduleDay(dateStr, mode){
   }
 }
 
-// Admin approves or denies a pending request. Approving locks the day in for
-// good (same as before); denying removes the request entirely, freeing the
-// day so someone can request it again.
-async function decideScheduleRequest(dateStr, approve){
-  const ref = doc(db,'tt_schedule', dateStr);
+// Admin approves or denies one specific pending request (by its doc id).
+// Approving locks that request in for good; denying removes it entirely,
+// freeing that person up to request a different mode (or day) later.
+async function decideScheduleRequest(reqId, approve){
+  const ref = doc(db,'tt_schedule', reqId);
   try{
     if(approve){
       await updateDoc(ref, {
@@ -1503,11 +1519,11 @@ async function decideScheduleRequest(dateStr, approve){
   }catch(err){ toast('Could not update that request: '+err.message); }
 }
 
-// The requester can withdraw their own still-pending request, freeing the day.
-async function cancelScheduleRequest(dateStr){
+// The requester can withdraw their own still-pending request.
+async function cancelScheduleRequest(reqId){
   if(!confirm('Withdraw your request for this day?')) return;
   try{
-    await deleteDoc(doc(db,'tt_schedule', dateStr));
+    await deleteDoc(doc(db,'tt_schedule', reqId));
     toast('Request withdrawn');
   }catch(err){ toast('Could not withdraw: '+err.message); }
 }
