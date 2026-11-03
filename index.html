@@ -180,6 +180,10 @@
   .modePill{ font-size:10px; padding:2px 9px; border-radius:20px; font-weight:700; letter-spacing:.05em; }
   .modePill.RTO{ background:#5B7FBF; color:#fff; }
   .modePill.WFH{ background:#4FA8A8; color:#fff; }
+  .modePill.OBS{ background:#B8934A; color:#1C2333; }
+  .modePill.VL{ background:#4C9A6A; color:#fff; }
+  .modePill.EL{ background:#C1533E; color:#fff; }
+  .modePill.HD{ background:#8A6FBF; color:#fff; }
   .rowActions .editBtn{ color:var(--brass-bright); }
   .rowActions .editBtn:hover{ color:var(--brass); }
   .emptyState{ text-align:center; padding:40px 10px; color:var(--text-muted); font-size:13px; }
@@ -308,8 +312,16 @@
   .cellReq:last-child{ margin-bottom:0; }
   .cellReq.approved.RTO{ background:#28345a; }
   .cellReq.approved.WFH{ background:#223b44; }
+  .cellReq.approved.OBS{ background:#4a3d22; }
+  .cellReq.approved.VL{ background:#20392c; }
+  .cellReq.approved.EL{ background:#3a241e; }
+  .cellReq.approved.HD{ background:#2c2545; }
   .cellReq.pending{ background:rgba(184,147,74,0.14); }
   .scheduleCell .cellClaim{ display:flex; flex-direction:column; gap:5px; margin-top:auto; }
+  .scheduleCell .cellClaim select{
+    width:100%; font-size:10px; padding:5px 4px; border-radius:5px; margin:0;
+    background:#1f2740; color:var(--text-light); border:1px solid #3a4560;
+  }
   .scheduleCell .cellClaim button{
     font-size:10px; font-weight:700; padding:6px 7px; border-radius:5px; letter-spacing:.02em;
     background:#1f2740; color:var(--text-light); border:1px solid #3a4560;
@@ -429,6 +441,10 @@
             <select id="workModeSelect">
               <option value="RTO">RTO — Office</option>
               <option value="WFH">WFH — Home</option>
+              <option value="OBS">OBS</option>
+              <option value="VL">VL</option>
+              <option value="EL">EL</option>
+              <option value="HD">Half Day</option>
             </select>
           </div>
           <div class="punchDisplay">
@@ -455,7 +471,7 @@
     <section class="panel" id="panel-schedule">
       <h2 class="sectionTitle">Team schedule</h2>
       <p class="sub" style="margin:-10px 0 18px; color:var(--text-muted); font-size:13px;">
-        Request RTO or WFH for any day. Anyone can request the same day — admin reviews each request and decides who gets approved. Once a request is approved it's locked in for good.
+        Request RTO, WFH, OBS, VL, EL, or Half Day for any day. Anyone can request the same day — admin reviews each request and decides who gets approved. Once a request is approved it's locked in for good.
       </p>
       <div class="card" style="margin-bottom:18px;">
         <div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px;">
@@ -465,11 +481,16 @@
             <button class="miniBtn" id="scheduleNextBtn" type="button" style="border:1px solid #3a4560; border-radius:6px;">&rsaquo;</button>
           </div>
           <div class="display" id="scheduleMonthLabel" style="font-size:18px; font-weight:600;"></div>
-          <div style="display:flex; gap:14px; font-size:11px; color:var(--text-muted); align-items:center; flex-wrap:wrap;">
-            <span><span class="modePill RTO">RTO</span> Office</span>
-            <span><span class="modePill WFH">WFH</span> Home</span>
-            <span><span class="statusPill pending">Pending</span> Awaiting admin</span>
-          </div>
+          <div></div>
+        </div>
+        <div style="display:flex; gap:10px; font-size:11px; color:var(--text-muted); align-items:center; flex-wrap:wrap; margin-top:12px; border-top:1px solid #3a4560; padding-top:12px;">
+          <span class="modePill RTO">RTO</span>
+          <span class="modePill WFH">WFH</span>
+          <span class="modePill OBS">OBS</span>
+          <span class="modePill VL">VL</span>
+          <span class="modePill EL">EL</span>
+          <span class="modePill HD">Half Day</span>
+          <span class="statusPill pending" style="margin-left:6px;">Pending</span> <span>= awaiting admin</span>
         </div>
       </div>
       <div class="scheduleCalendar">
@@ -514,6 +535,10 @@
               <option value="">All</option>
               <option value="RTO">RTO — Office</option>
               <option value="WFH">WFH — Home</option>
+              <option value="OBS">OBS</option>
+              <option value="VL">VL</option>
+              <option value="EL">EL</option>
+              <option value="HD">Half Day</option>
             </select>
           </div>
         </div>
@@ -552,6 +577,10 @@
     <select id="editEntryMode">
       <option value="RTO">RTO — Office</option>
       <option value="WFH">WFH — Home</option>
+      <option value="OBS">OBS</option>
+      <option value="VL">VL</option>
+      <option value="EL">EL</option>
+      <option value="HD">Half Day</option>
     </select>
     <div class="authError" id="editEntryError"></div>
     <div style="display:flex; gap:10px; margin-top:6px;">
@@ -610,6 +639,15 @@ let runningEntry = null; // this user's single active time-in entry, if any
 let elapsedTimer = null;
 let scheduleMap = {};      // dateStr ('YYYY-MM-DD', Manila) -> {workMode, ownerUid, ownerEmail}
 let scheduleMonth = null;  // Date representing the 1st of the month currently shown
+// Work-mode codes available when requesting a day on the Schedule calendar.
+const SCHEDULE_MODES = [
+  { code:'RTO', label:'RTO — Office' },
+  { code:'WFH', label:'WFH — Home' },
+  { code:'OBS', label:'OBS' },
+  { code:'VL',  label:'VL' },
+  { code:'EL',  label:'EL' },
+  { code:'HD',  label:'Half Day' }
+];
 let pendingSignupName = null; // name typed on the sign-up form, consumed once by resolveRole()
 let currentUserName = null;   // this session's own display name, once resolved from tt_users
 
@@ -1206,25 +1244,33 @@ function getFilteredCompletedEntries(){
 function runReport(){
   const filtered = getFilteredCompletedEntries();
 
-  let totalMs = 0, rtoMs = 0, wfhMs = 0;
+  let totalMs = 0;
+  const msByMode = {}; // workMode -> accumulated ms, built dynamically so any mode (RTO/WFH/OBS/VL/EL/HD/…) gets its own stat
   const byStaff = {};
 
   filtered.forEach(e=>{
     const durMs = e.end.toDate() - e.start.toDate();
     totalMs += durMs;
-    if(e.workMode === 'WFH') wfhMs += durMs; else rtoMs += durMs;
+    const modeKey = e.workMode || 'Unspecified';
+    msByMode[modeKey] = (msByMode[modeKey] || 0) + durMs;
 
     const sKey = e.ownerUid || e.ownerEmail || 'Unknown';
     if(!byStaff[sKey]) byStaff[sKey] = { name: e.ownerName || e.ownerEmail || 'Unknown', count:0, ms:0, items:[] };
     byStaff[sKey].count++; byStaff[sKey].ms += durMs; byStaff[sKey].items.push(e);
   });
 
-  // Summary cards
+  // Summary cards — Total hours, then one card per work mode actually present
+  // in this range (in the canonical SCHEDULE_MODES order, any unrecognized
+  // mode tacked on after), then entries/teammates counts.
   const summaryWrap = document.getElementById('reportSummary');
+  const modeOrder = SCHEDULE_MODES.map(m=>m.code).filter(code=> msByMode[code] != null);
+  const extraModes = Object.keys(msByMode).filter(code=> !modeOrder.includes(code));
+  const modeCards = [...modeOrder, ...extraModes].map(code=>
+    `<div class="reportStat"><div class="statLabel">${escapeHtml(code)} hours</div><div class="statValue">${formatHM(msByMode[code])}</div></div>`
+  ).join('');
   summaryWrap.innerHTML = `
     <div class="reportStat"><div class="statLabel">Total hours</div><div class="statValue">${formatHM(totalMs)}</div></div>
-    <div class="reportStat"><div class="statLabel">RTO hours</div><div class="statValue">${formatHM(rtoMs)}</div></div>
-    <div class="reportStat"><div class="statLabel">WFH hours</div><div class="statValue">${formatHM(wfhMs)}</div></div>
+    ${modeCards}
     <div class="reportStat"><div class="statLabel">Completed entries</div><div class="statValue">${filtered.length}</div></div>
     <div class="reportStat"><div class="statLabel">Teammates</div><div class="statValue">${Object.keys(byStaff).length}</div></div>
   `;
@@ -1446,8 +1492,10 @@ function renderScheduleMonth(){
     if(!isPast && !myRequest){
       innerHtml += `
         <div class="cellClaim">
-          <button data-action="claimDay" data-date="${dateStr}" data-mode="RTO">+ RTO</button>
-          <button data-action="claimDay" data-date="${dateStr}" data-mode="WFH">+ WFH</button>
+          <select class="cellModeSelect" data-date="${dateStr}">
+            ${SCHEDULE_MODES.map(m=> `<option value="${m.code}">${escapeHtml(m.label)}</option>`).join('')}
+          </select>
+          <button data-action="claimDay" data-date="${dateStr}">+ Request</button>
         </div>
       `;
     }
@@ -1457,7 +1505,10 @@ function renderScheduleMonth(){
   grid.innerHTML = html;
 
   grid.querySelectorAll('[data-action="claimDay"]').forEach(btn=>{
-    btn.addEventListener('click', ()=> claimScheduleDay(btn.dataset.date, btn.dataset.mode));
+    btn.addEventListener('click', ()=>{
+      const sel = btn.closest('.cellClaim').querySelector('.cellModeSelect');
+      claimScheduleDay(btn.dataset.date, sel.value);
+    });
   });
   grid.querySelectorAll('[data-action="approveReq"]').forEach(btn=>{
     btn.addEventListener('click', ()=> decideScheduleRequest(btn.dataset.id, true));
