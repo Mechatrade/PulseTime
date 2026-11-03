@@ -302,6 +302,7 @@
   .scheduleCell.isToday{ box-shadow: inset 0 0 0 2px var(--brass-bright); }
   .scheduleCell.claimed.RTO{ background:#28345a; }
   .scheduleCell.claimed.WFH{ background:#223b44; }
+  .scheduleCell.pendingDay{ background:rgba(184,147,74,0.14); }
   .scheduleCell .cellDate{ font-size:12px; font-weight:700; color:var(--text-light); }
   .scheduleCell.isPast .cellDate{ color:var(--text-muted); }
   .scheduleCell .cellClaim{ display:flex; flex-direction:column; gap:5px; margin-top:auto; }
@@ -311,11 +312,19 @@
   }
   .scheduleCell .cellClaim button:hover{ border-color:var(--brass); color:var(--brass-bright); }
   .scheduleCell .cellOwner{ font-size:10px; color:var(--text-muted); word-break:break-word; margin-top:2px; }
-  .scheduleCell .cellFreeBtn{
-    background:transparent; color:var(--text-muted); font-size:9px; padding:3px 0;
-    text-align:left; margin-top:auto; align-self:flex-start;
+  .scheduleCell .cellDecide{ display:flex; flex-direction:column; gap:5px; margin-top:auto; }
+  .scheduleCell .cellApprove{
+    background:var(--green); color:#fff; font-weight:700; font-size:10px; padding:6px 7px; border-radius:5px;
   }
-  .scheduleCell .cellFreeBtn:hover{ color:var(--red); }
+  .scheduleCell .cellApprove:hover{ background:#3f8459; }
+  .scheduleCell .cellDeny{
+    background:transparent; color:var(--text-muted); font-size:10px; padding:6px 7px; border-radius:5px; border:1px solid #3a4560;
+  }
+  .scheduleCell .cellDeny:hover{ color:var(--red); border-color:var(--red); }
+  .scheduleCell .cellCancel{
+    background:transparent; color:var(--text-muted); font-size:9px; padding:3px 0; text-align:left; margin-top:auto;
+  }
+  .scheduleCell .cellCancel:hover{ color:var(--red); }
   @media (max-width: 760px){
     .scheduleCell{ min-height:92px; }
   }
@@ -352,6 +361,10 @@
     <p class="sub">Time in and time out, right from the browser — Philippine time, always.</p>
     <div class="authError" id="authError"></div>
     <form id="authForm">
+      <div id="authNameRow" style="display:none;">
+        <label for="authName">Full name</label>
+        <input type="text" id="authName" autocomplete="name">
+      </div>
       <label for="authEmail">Email</label>
       <input type="email" id="authEmail" required autocomplete="email">
       <label for="authPass">Password</label>
@@ -438,7 +451,7 @@
     <section class="panel" id="panel-schedule">
       <h2 class="sectionTitle">Team schedule</h2>
       <p class="sub" style="margin:-10px 0 18px; color:var(--text-muted); font-size:13px;">
-        Pick RTO or WFH for a day. Each day has one slot for the whole team — first to claim it gets it, and it's locked for everyone else.
+        Request RTO or WFH for a day. Each day has one slot for the whole team — the first request holds that slot until admin approves or denies it, and an approved day is locked for everyone else.
       </p>
       <div class="card" style="margin-bottom:18px;">
         <div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px;">
@@ -448,9 +461,10 @@
             <button class="miniBtn" id="scheduleNextBtn" type="button" style="border:1px solid #3a4560; border-radius:6px;">&rsaquo;</button>
           </div>
           <div class="display" id="scheduleMonthLabel" style="font-size:18px; font-weight:600;"></div>
-          <div style="display:flex; gap:14px; font-size:11px; color:var(--text-muted); align-items:center;">
+          <div style="display:flex; gap:14px; font-size:11px; color:var(--text-muted); align-items:center; flex-wrap:wrap;">
             <span><span class="modePill RTO">RTO</span> Office</span>
             <span><span class="modePill WFH">WFH</span> Home</span>
+            <span><span class="statusPill pending">Pending</span> Awaiting admin</span>
           </div>
         </div>
       </div>
@@ -592,6 +606,8 @@ let runningEntry = null; // this user's single active time-in entry, if any
 let elapsedTimer = null;
 let scheduleMap = {};      // dateStr ('YYYY-MM-DD', Manila) -> {workMode, ownerUid, ownerEmail}
 let scheduleMonth = null;  // Date representing the 1st of the month currently shown
+let pendingSignupName = null; // name typed on the sign-up form, consumed once by resolveRole()
+let currentUserName = null;   // this session's own display name, once resolved from tt_users
 
 // ---------------- Toast ----------------
 function toast(msg){
@@ -610,6 +626,9 @@ const authError = document.getElementById('authError');
 const forgotPassRow = document.getElementById('forgotPassRow');
 const forgotPassLink = document.getElementById('forgotPassLink');
 
+const authNameRow = document.getElementById('authNameRow');
+const authNameInput = document.getElementById('authName');
+
 authToggleLink.addEventListener('click', ()=>{
   authMode = authMode === 'signin' ? 'signup' : 'signin';
   if(authMode==='signup'){
@@ -618,12 +637,16 @@ authToggleLink.addEventListener('click', ()=>{
     authToggleText.textContent = 'Already have an account?';
     authToggleLink.textContent = 'Sign in';
     forgotPassRow.style.display = 'none';
+    authNameRow.style.display = 'block';
+    authNameInput.required = true;
   } else {
     authTitle.textContent = 'Sign in';
     authSubmitBtn.textContent = 'Sign in';
     authToggleText.textContent = 'Setting this up for the first time?';
     authToggleLink.textContent = 'Create the first account';
     forgotPassRow.style.display = 'block';
+    authNameRow.style.display = 'none';
+    authNameInput.required = false;
   }
   authError.textContent = '';
 });
@@ -650,11 +673,18 @@ document.getElementById('authForm').addEventListener('submit', async (e)=>{
   const pass = document.getElementById('authPass').value;
   try{
     if(authMode==='signup'){
+      const name = authNameInput.value.trim();
+      if(!name){ authError.textContent = 'Please enter your full name.'; return; }
+      // Stashed for resolveRole() to use the moment it creates this account's
+      // tt_users doc right after sign-up — Firebase Auth itself has no
+      // built-in "name" field we store data in, so this travels separately.
+      pendingSignupName = name;
       await createUserWithEmailAndPassword(auth, email, pass);
     } else {
       await signInWithEmailAndPassword(auth, email, pass);
     }
   }catch(err){
+    pendingSignupName = null;
     authError.textContent = friendlyAuthError(err.code);
   }
 });
@@ -683,6 +713,7 @@ onAuthStateChanged(auth, async (user)=>{
     document.getElementById('authScreen').style.display = 'none';
     document.getElementById('userChip').textContent = user.email;
     await resolveRole();
+    document.getElementById('userChip').textContent = currentUserName || user.email;
     if(userStatus !== 'approved'){
       document.getElementById('appScreen').style.display = 'none';
       document.getElementById('pendingScreen').style.display = 'flex';
@@ -701,7 +732,7 @@ onAuthStateChanged(auth, async (user)=>{
     if(unsubTeam) unsubTeam();
     if(unsubSchedule) unsubSchedule();
     if(unsubOwnUserDoc) unsubOwnUserDoc();
-    entries = []; isAdmin = false; userStatus = null; scheduleMap = {};
+    entries = []; isAdmin = false; userStatus = null; scheduleMap = {}; currentUserName = null;
   }
 });
 
@@ -730,19 +761,25 @@ async function resolveRole(){
       const data = snap.data();
       isAdmin = data.role === 'admin';
       userStatus = data.status || 'pending';
+      currentUserName = data.name || null;
     } else {
+      // Brand-new account: the sign-up form requires a name, so this should
+      // always be set — but fall back to the email if it's ever missing
+      // rather than block account creation on it.
+      const name = pendingSignupName || currentUser.email;
+      pendingSignupName = null;
       const metaRef = doc(db,'tt_config','meta');
       const metaSnap = await getDoc(metaRef);
       if(!metaSnap.exists()){
         const batch = writeBatch(db);
-        batch.set(userRef, { email: currentUser.email, role:'admin', status:'approved', createdAt: serverTimestamp() });
+        batch.set(userRef, { email: currentUser.email, name, role:'admin', status:'approved', createdAt: serverTimestamp() });
         batch.set(metaRef, { founded: true, createdAt: serverTimestamp() });
         await batch.commit();
-        isAdmin = true; userStatus = 'approved';
+        isAdmin = true; userStatus = 'approved'; currentUserName = name;
         toast('You are the founding admin of this workspace');
       } else {
-        await setDoc(userRef, { email: currentUser.email, role:'staff', status:'pending', createdAt: serverTimestamp() });
-        isAdmin = false; userStatus = 'pending';
+        await setDoc(userRef, { email: currentUser.email, name, role:'staff', status:'pending', createdAt: serverTimestamp() });
+        isAdmin = false; userStatus = 'pending'; currentUserName = name;
       }
     }
   }catch(err){
@@ -813,7 +850,7 @@ function populateReportStaffFilter(){
   if(reportSel){
     const prevReport = reportSel.value;
     reportSel.innerHTML = '<option value="">Everyone</option>' +
-      approved.map(m=> `<option value="${m.id}">${escapeHtml(m.email)}${m.role==='admin' ? ' (admin)' : ''}</option>`).join('');
+      approved.map(m=> `<option value="${m.id}">${escapeHtml(m.name || m.email)}${m.role==='admin' ? ' (admin)' : ''}</option>`).join('');
     if(approved.some(m=>m.id===prevReport)) reportSel.value = prevReport;
   }
 }
@@ -831,8 +868,9 @@ function renderTeam(){
   pendingEmpty.style.display = pending.length===0 ? 'block' : 'none';
   pendingWrap.innerHTML = pending.map(m=>`
     <div class="teamRow pendingRow">
-      <div class="tInfo"><b>${escapeHtml(m.email)}</b><span>Requested access</span></div>
+      <div class="tInfo"><b>${escapeHtml(m.name || m.email)}</b><span>${m.name ? escapeHtml(m.email)+' · ' : ''}Requested access</span></div>
       <div class="teamActions">
+        <button class="denyBtn" data-id="${m.id}" data-action="editName">${m.name ? 'Edit name' : 'Add name'}</button>
         <button class="approveBtn" data-id="${m.id}" data-action="approve">Approve</button>
         <button class="denyBtn" data-id="${m.id}" data-action="deny">Deny</button>
       </div>
@@ -844,8 +882,9 @@ function renderTeam(){
     const isSelf = m.id === currentUser.uid;
     return `
     <div class="teamRow">
-      <div class="tInfo"><b>${escapeHtml(m.email)}<span class="roleBadge ${m.role}">${m.role}</span></b><span>${isSelf ? 'This is you' : 'Approved'}</span></div>
+      <div class="tInfo"><b>${escapeHtml(m.name || m.email)}<span class="roleBadge ${m.role}">${m.role}</span></b><span>${escapeHtml(m.email)}${isSelf ? ' · This is you' : ''}</span></div>
       <div class="teamActions">
+        <button class="denyBtn" data-id="${m.id}" data-action="editName">${m.name ? 'Edit name' : 'Add name'}</button>
         ${isSelf ? '' : `
           <button class="denyBtn" data-id="${m.id}" data-role="${m.role}" data-action="toggleRole">${m.role==='admin' ? 'Make staff' : 'Make admin'}</button>
           <button class="denyBtn" data-id="${m.id}" data-action="remove">Remove access</button>
@@ -879,6 +918,21 @@ function renderTeam(){
       if(!confirm('Remove this person\'s access? They can request again by signing in.')) return;
       try{ await deleteDoc(doc(db,'tt_users',btn.dataset.id)); toast('Access removed'); }
       catch(err){ toast('Could not remove access: '+err.message); }
+    });
+  });
+  // Admin sets/edits a teammate's name — covers accounts created before the
+  // name field existed, and lets a typo be fixed later. Shows everywhere
+  // that teammate's name appears (entries, reports, schedule).
+  document.querySelectorAll('#panel-team [data-action="editName"]').forEach(btn=>{
+    btn.addEventListener('click', async ()=>{
+      const member = teamMembers.find(m=> m.id === btn.dataset.id);
+      const current = (member && member.name) || '';
+      const next = prompt('Full name for this teammate:', current);
+      if(next===null) return; // cancelled
+      const trimmed = next.trim();
+      if(!trimmed){ toast('Name can\'t be empty'); return; }
+      try{ await updateDoc(doc(db,'tt_users',btn.dataset.id), { name: trimmed }); toast('Name updated'); }
+      catch(err){ toast('Could not update name: '+err.message); }
     });
   });
 }
@@ -957,6 +1011,7 @@ punchBtn.addEventListener('click', async ()=>{
     try{
       await addDoc(collection(db,'tt_entries'), {
         start: serverTimestamp(), end: null, ownerUid: currentUser.uid, ownerEmail: currentUser.email,
+        ownerName: currentUserName || currentUser.email,
         workMode
       });
       toast('Timed in');
@@ -991,7 +1046,7 @@ function renderEntries(){
       adjustedTitle = `Adjusted by ${e.editedBy||'admin'}${editedStr ? ' on '+editedStr : ''}`;
     }
     return `<tr>
-      <td style="display:${isAdmin?'':'none'};">${escapeHtml(e.ownerEmail||'—')}</td>
+      <td style="display:${isAdmin?'':'none'};">${escapeHtml(e.ownerName || e.ownerEmail || '—')}</td>
       <td>${e.workMode ? `<span class="modePill ${e.workMode}">${e.workMode}</span>` : '—'}</td>
       <td>${dateStr}</td>
       <td class="mono">${inStr}</td>
@@ -1046,7 +1101,8 @@ function openEditEntryModal(entryId){
   if(!entry) return;
   editingEntryId = entryId;
 
-  document.getElementById('editEntryClientLabel').textContent = entry.ownerEmail ? 'Entry for '+entry.ownerEmail : 'Edit entry';
+  const entryOwnerLabel = entry.ownerName || entry.ownerEmail;
+  document.getElementById('editEntryClientLabel').textContent = entryOwnerLabel ? 'Entry for '+entryOwnerLabel : 'Edit entry';
   document.getElementById('editEntryError').textContent = '';
 
   const startD = entry.start && entry.start.toDate ? entry.start.toDate() : new Date();
@@ -1147,8 +1203,8 @@ function runReport(){
     totalMs += durMs;
     if(e.workMode === 'WFH') wfhMs += durMs; else rtoMs += durMs;
 
-    const sKey = e.ownerEmail || 'Unknown';
-    if(!byStaff[sKey]) byStaff[sKey] = { count:0, ms:0, items:[] };
+    const sKey = e.ownerUid || e.ownerEmail || 'Unknown';
+    if(!byStaff[sKey]) byStaff[sKey] = { name: e.ownerName || e.ownerEmail || 'Unknown', count:0, ms:0, items:[] };
     byStaff[sKey].count++; byStaff[sKey].ms += durMs; byStaff[sKey].items.push(e);
   });
 
@@ -1167,7 +1223,8 @@ function runReport(){
   const staffEmpty = document.getElementById('reportStaffEmpty');
   const staffRows = Object.entries(byStaff).sort((a,b)=> b[1].ms - a[1].ms);
   staffEmpty.style.display = staffRows.length===0 ? 'block' : 'none';
-  staffBody.innerHTML = staffRows.map(([name,v], idx)=>{
+  staffBody.innerHTML = staffRows.map(([key,v], idx)=>{
+    const name = v.name;
     const rowId = `reportStaffDetail${idx}`;
     const itemsSorted = v.items.slice().sort((a,b)=> b.start.toDate() - a.start.toDate());
     const breakdownRows = itemsSorted.map(e=>{
@@ -1244,7 +1301,7 @@ function exportReportCSV(){
   const filtered = getFilteredCompletedEntries().slice().sort((a,b)=> a.start.toDate() - b.start.toDate());
   if(filtered.length===0){ toast('No completed entries to export in this range'); return; }
 
-  const rows = [['Teammate','Mode','Date','Time In','Time Out','Duration (hours)']];
+  const rows = [['Teammate','Email','Mode','Date','Time In','Time Out','Duration (hours)']];
   filtered.forEach(e=>{
     const tz = MANILA_TZ;
     const startD = e.start.toDate();
@@ -1253,7 +1310,7 @@ function exportReportCSV(){
     const inStr = new Intl.DateTimeFormat('en-US',{hour:'2-digit',minute:'2-digit',timeZone:tz}).format(startD) + ' ' + tzAbbr(startD, tz);
     const outStr = new Intl.DateTimeFormat('en-US',{hour:'2-digit',minute:'2-digit',timeZone:tz}).format(endD) + ' ' + tzAbbr(endD, tz);
     const hours = ((endD - startD) / 3600000).toFixed(2);
-    rows.push([e.ownerEmail||'', e.workMode||'', dateStr, inStr, outStr, hours]);
+    rows.push([e.ownerName||e.ownerEmail||'', e.ownerEmail||'', e.workMode||'', dateStr, inStr, outStr, hours]);
   });
 
   const csv = rows.map(r=> r.map(cell=>{
@@ -1337,21 +1394,42 @@ function renderScheduleMonth(){
     const isToday = dateStr === todayStr;
     const isPast = dateStr < todayStr;
     const claim = scheduleMap[dateStr];
+    const isPending = claim && claim.status === 'pending';
+    const isApprovedDay = claim && claim.status === 'approved';
 
     let cls = 'scheduleCell';
     if(isToday) cls += ' isToday';
     if(isPast) cls += ' isPast';
-    if(claim) cls += ` claimed ${claim.workMode}`;
+    if(isApprovedDay) cls += ` claimed ${claim.workMode}`;
+    if(isPending) cls += ' pendingDay';
 
     let innerHtml = `<div class="cellDate">${dayNum}</div>`;
-    if(claim){
-      const isMine = claim.ownerUid === currentUser.uid;
-      const canFree = !isPast && (isAdmin || isMine);
+    if(isApprovedDay){
+      // Once a day is approved it stays locked for good — no cancel/clear for
+      // anyone, owner or admin, since multiple people share this calendar and
+      // freeing a day back up could let someone else grab it out from under
+      // the original claimant.
       innerHtml += `
         <span class="modePill ${claim.workMode}">${claim.workMode}</span>
-        <div class="cellOwner">${escapeHtml(claim.ownerEmail||'—')}</div>
-        ${canFree ? `<button class="cellFreeBtn" data-action="freeDay" data-date="${dateStr}">${isAdmin && !isMine ? 'Clear (admin)' : 'Cancel'}</button>` : ''}
+        <div class="cellOwner">${escapeHtml(claim.ownerName || claim.ownerEmail || '—')}</div>
       `;
+    } else if(isPending){
+      const isMine = claim.ownerUid === currentUser.uid;
+      innerHtml += `
+        <span class="modePill ${claim.workMode}">${claim.workMode}</span>
+        <span class="statusPill pending" style="margin-top:3px;">Pending</span>
+        <div class="cellOwner">${escapeHtml(claim.ownerName || claim.ownerEmail || '—')}</div>
+      `;
+      if(isAdmin){
+        innerHtml += `
+          <div class="cellDecide">
+            <button class="cellApprove" data-action="approveDay" data-date="${dateStr}">Approve</button>
+            <button class="cellDeny" data-action="denyDay" data-date="${dateStr}">Deny</button>
+          </div>
+        `;
+      } else if(isMine){
+        innerHtml += `<button class="cellCancel" data-action="cancelDay" data-date="${dateStr}">Cancel request</button>`;
+      }
     } else if(!isPast){
       innerHtml += `
         <div class="cellClaim">
@@ -1368,40 +1446,70 @@ function renderScheduleMonth(){
   grid.querySelectorAll('[data-action="claimDay"]').forEach(btn=>{
     btn.addEventListener('click', ()=> claimScheduleDay(btn.dataset.date, btn.dataset.mode));
   });
-  grid.querySelectorAll('[data-action="freeDay"]').forEach(btn=>{
-    btn.addEventListener('click', ()=> freeScheduleDay(btn.dataset.date));
+  grid.querySelectorAll('[data-action="approveDay"]').forEach(btn=>{
+    btn.addEventListener('click', ()=> decideScheduleRequest(btn.dataset.date, true));
+  });
+  grid.querySelectorAll('[data-action="denyDay"]').forEach(btn=>{
+    btn.addEventListener('click', ()=> decideScheduleRequest(btn.dataset.date, false));
+  });
+  grid.querySelectorAll('[data-action="cancelDay"]').forEach(btn=>{
+    btn.addEventListener('click', ()=> cancelScheduleRequest(btn.dataset.date));
   });
 }
 
+// Staff requests a day — it goes in as 'pending' and waits on admin. Admin
+// claiming a day auto-approves it immediately (admin's own call is already
+// authoritative, no point requesting approval from themselves).
 async function claimScheduleDay(dateStr, mode){
   const ref = doc(db,'tt_schedule', dateStr);
   try{
     await runTransaction(db, async (tx)=>{
       const snap = await tx.get(ref);
       if(snap.exists()){
-        throw new Error('That day was just taken by someone else.');
+        throw new Error('That day already has a request or an approved schedule.');
       }
       tx.set(ref, {
         date: dateStr,
         workMode: mode,
         ownerUid: currentUser.uid,
         ownerEmail: currentUser.email,
+        ownerName: currentUserName || currentUser.email,
+        status: isAdmin ? 'approved' : 'pending',
         createdAt: serverTimestamp()
       });
     });
-    toast(`${mode} claimed for ${dateStr}`);
+    toast(isAdmin ? `${mode} scheduled for ${dateStr}` : `Requested ${mode} for ${dateStr} — waiting on admin approval`);
   }catch(err){
-    toast('Could not claim that day: '+err.message);
+    toast('Could not request that day: '+err.message);
     renderScheduleMonth(); // snap back to the real state in case of a race
   }
 }
 
-async function freeScheduleDay(dateStr){
-  if(!confirm('Free up this day so someone else can claim it?')) return;
+// Admin approves or denies a pending request. Approving locks the day in for
+// good (same as before); denying removes the request entirely, freeing the
+// day so someone can request it again.
+async function decideScheduleRequest(dateStr, approve){
+  const ref = doc(db,'tt_schedule', dateStr);
+  try{
+    if(approve){
+      await updateDoc(ref, {
+        status: 'approved', decidedBy: currentUser.email, decidedAt: serverTimestamp()
+      });
+      toast('Request approved');
+    } else {
+      await deleteDoc(ref);
+      toast('Request denied');
+    }
+  }catch(err){ toast('Could not update that request: '+err.message); }
+}
+
+// The requester can withdraw their own still-pending request, freeing the day.
+async function cancelScheduleRequest(dateStr){
+  if(!confirm('Withdraw your request for this day?')) return;
   try{
     await deleteDoc(doc(db,'tt_schedule', dateStr));
-    toast('Slot cleared');
-  }catch(err){ toast('Could not clear that day: '+err.message); }
+    toast('Request withdrawn');
+  }catch(err){ toast('Could not withdraw: '+err.message); }
 }
 
 document.getElementById('schedulePrevBtn').addEventListener('click', ()=>{
