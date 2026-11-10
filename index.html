@@ -184,6 +184,7 @@
   .modePill.VL{ background:#4C9A6A; color:#fff; }
   .modePill.EL{ background:#C1533E; color:#fff; }
   .modePill.HD{ background:#8A6FBF; color:#fff; }
+  .modePill.SL{ background:#D4668A; color:#fff; }
   .rowActions .editBtn{ color:var(--brass-bright); }
   .rowActions .editBtn:hover{ color:var(--brass); }
   .emptyState{ text-align:center; padding:40px 10px; color:var(--text-muted); font-size:13px; }
@@ -306,6 +307,12 @@
   .scheduleCell.isToday{ box-shadow: inset 0 0 0 2px var(--brass-bright); }
   .scheduleCell .cellDate{ font-size:12px; font-weight:700; color:var(--text-light); }
   .scheduleCell.isPast .cellDate{ color:var(--text-muted); }
+  .scheduleCell.isHoliday{ border-top:2px solid var(--brass); }
+  .holidayTag{
+    font-size:9px; font-weight:700; line-height:1.25; padding:2px 5px; border-radius:4px;
+    background:rgba(184,147,74,0.2); color:var(--brass-bright); word-break:break-word;
+  }
+  .holidayTag.special{ background:rgba(90,110,140,0.22); color:#aab8cf; }
   /* Each request (there can now be several per day, from different people)
      renders as its own compact block inside the cell. */
   .cellReq{ border-radius:6px; padding:5px 6px; margin-bottom:6px; }
@@ -316,6 +323,7 @@
   .cellReq.approved.VL{ background:#20392c; }
   .cellReq.approved.EL{ background:#3a241e; }
   .cellReq.approved.HD{ background:#2c2545; }
+  .cellReq.approved.SL{ background:#442530; }
   .cellReq.pending{ background:rgba(184,147,74,0.14); }
   .scheduleCell .cellClaim{ display:flex; flex-direction:column; gap:5px; margin-top:auto; }
   .scheduleCell .cellClaim select{
@@ -444,6 +452,7 @@
               <option value="OBS">OBS</option>
               <option value="VL">VL</option>
               <option value="EL">EL</option>
+              <option value="SL">SL</option>
               <option value="HD">Half Day</option>
             </select>
           </div>
@@ -471,7 +480,7 @@
     <section class="panel" id="panel-schedule">
       <h2 class="sectionTitle">Team schedule</h2>
       <p class="sub" style="margin:-10px 0 18px; color:var(--text-muted); font-size:13px;">
-        Request RTO, WFH, OBS, VL, EL, or Half Day for any day. Anyone can request the same day — admin reviews each request and decides who gets approved. Once a request is approved it's locked in for good.
+        Request RTO, WFH, OBS, VL, EL, SL, or Half Day for any day. Anyone can request the same day — admin reviews each request and decides who gets approved. Once a request is approved it's locked in for good.
       </p>
       <div class="card" style="margin-bottom:18px;">
         <div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px;">
@@ -489,8 +498,12 @@
           <span class="modePill OBS">OBS</span>
           <span class="modePill VL">VL</span>
           <span class="modePill EL">EL</span>
+          <span class="modePill SL">SL</span>
           <span class="modePill HD">Half Day</span>
           <span class="statusPill pending" style="margin-left:6px;">Pending</span> <span>= awaiting admin</span>
+          <span style="margin-left:6px; display:flex; align-items:center; gap:5px;">
+            <span class="holidayTag" style="padding:3px 6px;">Holiday</span><span class="holidayTag special" style="padding:3px 6px;">Special</span>
+          </span>
         </div>
       </div>
       <div class="scheduleCalendar">
@@ -538,6 +551,7 @@
               <option value="OBS">OBS</option>
               <option value="VL">VL</option>
               <option value="EL">EL</option>
+              <option value="SL">SL</option>
               <option value="HD">Half Day</option>
             </select>
           </div>
@@ -580,6 +594,7 @@
       <option value="OBS">OBS</option>
       <option value="VL">VL</option>
       <option value="EL">EL</option>
+      <option value="SL">SL</option>
       <option value="HD">Half Day</option>
     </select>
     <div class="authError" id="editEntryError"></div>
@@ -646,8 +661,37 @@ const SCHEDULE_MODES = [
   { code:'OBS', label:'OBS' },
   { code:'VL',  label:'VL' },
   { code:'EL',  label:'EL' },
+  { code:'SL',  label:'SL' },
   { code:'HD',  label:'Half Day' }
 ];
+
+// Official Philippine holidays, keyed by Manila date ("YYYY-MM-DD"). Source:
+// Malacañang Proclamation No. 1006 (2026 regular holidays and special
+// non-working days), confirmed against news coverage as of this writing.
+// Eid'l Fitr and Eid'l Adha are lunar-based and are proclaimed separately,
+// closer to their actual dates — add them here once announced, same format
+// as the entries below. To cover a new year, just add more "YYYY-MM-DD"
+// entries to this same object; the keys already carry their own year.
+const PH_HOLIDAYS = {
+  '2026-01-01': { name: "New Year's Day", type: 'regular' },
+  '2026-02-17': { name: 'Chinese New Year', type: 'special' },
+  '2026-04-02': { name: 'Maundy Thursday', type: 'regular' },
+  '2026-04-03': { name: 'Good Friday', type: 'regular' },
+  '2026-04-04': { name: 'Black Saturday', type: 'special' },
+  '2026-04-09': { name: 'Araw ng Kagitingan', type: 'regular' },
+  '2026-05-01': { name: 'Labor Day', type: 'regular' },
+  '2026-06-12': { name: 'Independence Day', type: 'regular' },
+  '2026-08-21': { name: 'Ninoy Aquino Day', type: 'special' },
+  '2026-08-31': { name: 'National Heroes Day', type: 'regular' },
+  '2026-11-01': { name: "All Saints' Day", type: 'special' },
+  '2026-11-02': { name: "All Souls' Day", type: 'special' },
+  '2026-11-30': { name: 'Bonifacio Day', type: 'regular' },
+  '2026-12-08': { name: 'Feast of the Immaculate Conception', type: 'special' },
+  '2026-12-24': { name: 'Christmas Eve', type: 'special' },
+  '2026-12-25': { name: 'Christmas Day', type: 'regular' },
+  '2026-12-30': { name: 'Rizal Day', type: 'regular' },
+  '2026-12-31': { name: 'Last Day of the Year', type: 'special' }
+};
 let pendingSignupName = null; // name typed on the sign-up form, consumed once by resolveRole()
 let currentUserName = null;   // this session's own display name, once resolved from tt_users
 
@@ -1475,13 +1519,18 @@ function renderScheduleMonth(){
     const isPast = dateStr < todayStr;
     const requests = (scheduleMap[dateStr] || []).slice().sort((a,b)=> (a.workMode||'').localeCompare(b.workMode||''));
     const myRequest = requests.find(r=> r.ownerUid === currentUser.uid);
+    const holiday = PH_HOLIDAYS[dateStr];
 
     let cls = 'scheduleCell';
     if(isToday) cls += ' isToday';
     if(isPast) cls += ' isPast';
     if(requests.length) cls += ' hasRequests';
+    if(holiday) cls += ' isHoliday';
 
     let innerHtml = `<div class="cellDate">${dayNum}</div>`;
+    if(holiday){
+      innerHtml += `<div class="holidayTag ${holiday.type}" title="${escapeHtml(holiday.name)}${holiday.type==='regular' ? ' (Regular Holiday)' : ' (Special Non-Working Day)'}">${escapeHtml(holiday.name)}</div>`;
+    }
 
     innerHtml += requests.map(r=>{
       const isApprovedReq = r.status === 'approved';
