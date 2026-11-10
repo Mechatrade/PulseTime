@@ -605,6 +605,26 @@
   </div>
 </div>
 
+<!-- ================= EDIT SCHEDULE REQUEST MODAL (admin only) ================= -->
+<div id="editRequestModal" style="display:none; position:fixed; inset:0; background:rgba(20,25,38,0.72); z-index:200; align-items:center; justify-content:center; padding:20px;">
+  <div class="authCard" style="max-width:420px; text-align:left;">
+    <div class="eyebrow" style="color:#b8934a;">Adjust schedule request</div>
+    <h1 id="editRequestLabel" style="font-size:20px;">Edit request</h1>
+    <label for="editRequestMode">Work mode</label>
+    <select id="editRequestMode"></select>
+    <label for="editRequestStatus">Status</label>
+    <select id="editRequestStatus">
+      <option value="pending">Pending</option>
+      <option value="approved">Approved</option>
+    </select>
+    <div class="authError" id="editRequestError"></div>
+    <div style="display:flex; gap:10px; margin-top:6px;">
+      <button class="btnPrimary" id="editRequestSaveBtn" style="flex:1;">Save changes</button>
+      <button class="signOutBtn" id="editRequestCancelBtn" style="flex:1; padding:12px; border-radius:6px;">Cancel</button>
+    </div>
+  </div>
+</div>
+
 <div class="toast" id="toast"></div>
 
 <!-- ================= FIREBASE ================= -->
@@ -1555,6 +1575,13 @@ function renderScheduleMonth(){
           rowHtml += `<button class="cellCancel" data-action="cancelReq" data-id="${r.id}">Cancel request</button>`;
         }
       }
+      // Admin can edit any request (pending or approved): change its work
+      // mode or status. Editing doesn't free the day up, it only corrects
+      // what's recorded.
+      if(isAdmin){
+        rowHtml += `<button class="cellCancel" style="color:var(--brass-bright);" data-action="editReq" data-id="${r.id}">Edit</button>`;
+      }
+      if(r.edited) rowHtml += `<div class="cellOwner" title="Adjusted by ${escapeHtml(r.editedBy||'admin')}">Adjusted</div>`;
       return `<div class="cellReq ${r.status} ${r.workMode}">${rowHtml}</div>`;
     }).join('');
 
@@ -1584,6 +1611,9 @@ function renderScheduleMonth(){
   });
   grid.querySelectorAll('[data-action="denyReq"]').forEach(btn=>{
     btn.addEventListener('click', ()=> decideScheduleRequest(btn.dataset.id, false));
+  });
+  grid.querySelectorAll('[data-action="editReq"]').forEach(btn=>{
+    btn.addEventListener('click', ()=> openEditRequestModal(btn.dataset.id));
   });
   grid.querySelectorAll('[data-action="cancelReq"]').forEach(btn=>{
     btn.addEventListener('click', ()=> cancelScheduleRequest(btn.dataset.id));
@@ -1638,6 +1668,44 @@ async function decideScheduleRequest(reqId, approve){
     }
   }catch(err){ toast('Could not update that request: '+err.message); }
 }
+
+// Admin edits any schedule request's mode/status via a small modal.
+let editingRequestId = null;
+function openEditRequestModal(reqId){
+  const req = Object.values(scheduleMap).flat().find(r=> r.id === reqId);
+  if(!req) return;
+  editingRequestId = reqId;
+  document.getElementById('editRequestLabel').textContent =
+    `${req.ownerName || req.ownerEmail || 'Request'} — ${req.date}`;
+  const modeSel = document.getElementById('editRequestMode');
+  modeSel.innerHTML = SCHEDULE_MODES.map(m=> `<option value="${m.code}">${escapeHtml(m.label)}</option>`).join('');
+  modeSel.value = req.workMode;
+  document.getElementById('editRequestStatus').value = req.status || 'pending';
+  document.getElementById('editRequestError').textContent = '';
+  document.getElementById('editRequestModal').style.display = 'flex';
+}
+function closeEditRequestModal(){
+  editingRequestId = null;
+  document.getElementById('editRequestModal').style.display = 'none';
+}
+document.getElementById('editRequestCancelBtn').addEventListener('click', closeEditRequestModal);
+document.getElementById('editRequestModal').addEventListener('click', (e)=>{
+  if(e.target.id === 'editRequestModal') closeEditRequestModal();
+});
+document.getElementById('editRequestSaveBtn').addEventListener('click', async ()=>{
+  if(!editingRequestId) return;
+  try{
+    await updateDoc(doc(db,'tt_schedule', editingRequestId), {
+      workMode: document.getElementById('editRequestMode').value,
+      status: document.getElementById('editRequestStatus').value,
+      edited: true, editedBy: currentUser.email, editedAt: serverTimestamp()
+    });
+    closeEditRequestModal();
+    toast('Request updated');
+  }catch(err){
+    document.getElementById('editRequestError').textContent = 'Could not save: '+err.message;
+  }
+});
 
 // The requester can withdraw their own still-pending request.
 async function cancelScheduleRequest(reqId){
