@@ -1579,7 +1579,7 @@ function renderScheduleMonth(){
       // mode or status. Editing doesn't free the day up, it only corrects
       // what's recorded.
       if(isAdmin){
-        rowHtml += `<button class="cellCancel" style="color:var(--brass-bright);" data-action="editReq" data-id="${r.id}">Edit</button>`;
+        rowHtml += `<div class="cellDecide"><button class="cellCancel" style="color:var(--brass-bright);" data-action="editReq" data-id="${r.id}">Edit</button><button class="cellCancel" data-action="deleteReq" data-id="${r.id}">Delete</button></div>`;
       }
       if(r.edited) rowHtml += `<div class="cellOwner" title="Adjusted by ${escapeHtml(r.editedBy||'admin')}">Adjusted</div>`;
       return `<div class="cellReq ${r.status} ${r.workMode}">${rowHtml}</div>`;
@@ -1611,6 +1611,9 @@ function renderScheduleMonth(){
   });
   grid.querySelectorAll('[data-action="denyReq"]').forEach(btn=>{
     btn.addEventListener('click', ()=> decideScheduleRequest(btn.dataset.id, false));
+  });
+  grid.querySelectorAll('[data-action="deleteReq"]').forEach(btn=>{
+    btn.addEventListener('click', ()=> adminDeleteScheduleRequest(btn.dataset.id));
   });
   grid.querySelectorAll('[data-action="editReq"]').forEach(btn=>{
     btn.addEventListener('click', ()=> openEditRequestModal(btn.dataset.id));
@@ -1708,6 +1711,16 @@ document.getElementById('editRequestSaveBtn').addEventListener('click', async ()
 });
 
 // The requester can withdraw their own still-pending request.
+// Admin can delete any request, pending or approved. This removes it
+// entirely, so that person can request that day again.
+async function adminDeleteScheduleRequest(reqId){
+  if(!confirm('Delete this schedule request? This cannot be undone.')) return;
+  try{
+    await deleteDoc(doc(db,'tt_schedule', reqId));
+    toast('Request deleted');
+  }catch(err){ toast('Could not delete: '+err.message); }
+}
+
 async function cancelScheduleRequest(reqId){
   if(!confirm('Withdraw your request for this day?')) return;
   try{
